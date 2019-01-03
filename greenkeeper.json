@@ -1,0 +1,12 @@
+{
+  "groups": {
+    "default": {
+      "packages": [
+        "checker/package.json",
+        "confirmer/package.json",
+        "lookup/package.json",
+        "setgithubcheck/package.json"
+      ]
+    }
+  }
+}
