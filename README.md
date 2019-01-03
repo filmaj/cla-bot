@@ -1,5 +1,7 @@
 # CLA-BOT
 
+[![Greenkeeper badge](https://badges.greenkeeper.io/adobe/cla-bot.svg)](https://greenkeeper.io/)
+
 This is a GitHub App that checks that pull request issuers to [github.com/adobe](https://github.com/adobe) have signed the [Adobe CLA](http://opensource.adobe.com/cla.html).
 
 ## Overview
