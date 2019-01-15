@@ -42,7 +42,9 @@ function main (params) {
     var commit_sha = params.pull_request.head.sha;
     var installation_id = params.installation.id;
 
-    var args = {
+    // base GitHub Check arguments to send
+    var base_args = {
+      status: 'completed',
       start_time: start_time,
       org: org,
       repo: repo,
@@ -63,38 +65,18 @@ function main (params) {
     }).then(function (is_member) {
       // if status is 204, user is a member.
       // if status is 404, user is not a member - but this triggers the catch in
-      // the promise.
+      // the promise (so we jump to the next chain in the promise).
       // more details here: https://developer.github.com/v3/orgs/members/#check-membership
       if (is_member.status === 204) {
-        ow.actions.invoke({
-          name: 'cla-setgithubcheck',
-          blocking: true,
-          result: true,
-          params: {
-            installation_id: installation_id,
-            org: org,
-            repo: repo,
-            sha: commit_sha,
-            status: 'completed',
-            start_time: start_time,
-            conclusion: 'success',
-            title: '✓ Adobe Employee',
-            summary: 'Pull request issued by an Adobe Employee (based on membership in github.com/adobe), carry on.'
-          }
-        }).then(function (check) {
-          // The parameter in this function is defined by the setgithubcheck
-          // action's resolve parameter (see setgithubcheck/setgithubcheck.js)
-          resolve({
-            body: check.title
-          });
+        var all_good_args = Object.assign({
+          conclusion: 'success',
+          title: '✓ Adobe Employee',
+          summary: 'Pull request issued by an Adobe Employee (based on membership in github.com/' + org + '), carry on.'
+        }, base_args);
+        set_check(ow, all_good_args).then(function (response) {
+          resolve(response);
         }).catch(function (err) {
-          resolve({
-            statusCode: 500,
-            body: {
-              error: err,
-              reason: 'Error during GitHub Check creation.'
-            }
-          });
+          resolve(respond_with_error(err, 'Error during GitHub Check creation.'));
         });
       }
     }).catch(function (err) {
@@ -114,7 +96,9 @@ function main (params) {
             refresh_token: config.signRefreshToken
           }
         };
-
+        // TODO: We're mixing callbacks and promises. Can we replace this with
+        // promise? need to use a diff package, request-promise-native or
+        // request-promise-any or request-promise
         request(options, function (error, response, body) {
           if (error) {
             return resolve({
@@ -161,7 +145,13 @@ function main (params) {
               });
             }
 
-            if (body.userAgreementList && body.userAgreementList.length) {
+            if (!body.userAgreementList || body.userAgreementList.length === 0) {
+              sign_cla(ow, base_args).then(function (response) {
+                resolve(response);
+              }).catch(function (err) {
+                resolve(respond_with_error(err, 'Error during sign_cla when body empty.'));
+              });
+            } else {
               // We have a few agreements to search through.
               var agreements = body.userAgreementList.filter(function (agreement) {
                 return (agreement.status === 'SIGNED' && (agreement.name === 'Adobe Contributor License Agreement' || agreement.name === 'Adobe CLA'));
@@ -176,105 +166,76 @@ function main (params) {
                   agreements: agreements,
                   username: user
                 }
+              }).catch(function (err) {
+                resolve(respond_with_error(err, 'Error invoking lookup action.'));
               }).then(function (res) {
-                var usernames = res.body.usernames;
-                if (usernames.map(function (item) { return item.toLowerCase(); }).indexOf(user.toLowerCase()) > -1) {
-                  ow.actions.invoke({
-                    name: 'cla-setgithubcheck',
-                    blocking: true,
-                    result: true,
-                    params: {
-                      installation_id: installation_id,
-                      org: org,
-                      repo: repo,
-                      sha: commit_sha,
-                      status: 'completed',
-                      start_time: start_time,
-                      conclusion: 'success',
-                      title: 'CLA Signed',
-                      summary: 'A Signed CLA has been found for the github user ' + user
-                    }
-                  }).then(function (check) {
-                    // The parameter in this function is defined by the setgithubcheck
-                    // action's resolve parameter (see setgithubcheck/setgithubcheck.js)
-                    resolve({
-                      body: check.title
-                    });
+                var usernames = res.body.usernames.map(function (item) { return item.toLowerCase(); });
+                if (!usernames.includes(user.toLowerCase())) {
+                  sign_cla(ow, base_args).then(function (response) {
+                    resolve(response);
                   }).catch(function (err) {
-                    resolve({
-                      statusCode: 500,
-                      body: {
-                        error: err,
-                        reason: 'Error during GitHub Check creation.'
-                      }
-                    });
+                    resolve(respond_with_error(err, 'Error during sign_cla when username not found.'));
                   });
                 } else {
-                  resolve(action_required(ow, args));
+                  var signed_args = Object.assign({
+                    conclusion: 'success',
+                    title: 'CLA Signed',
+                    summary: 'A Signed CLA has been found for the github user ' + user
+                  }, base_args);
+                  set_check(ow, signed_args).then(function (response) {
+                    resolve(response);
+                  }).catch(function (err) {
+                    resolve(respond_with_error(err, 'Error during GitHub Check creation when CLA username found.'));
+                  });
                 }
-              }).catch(function (err) {
-                resolve({
-                  statusCode: 500,
-                  body: {
-                    error: err,
-                    reason: 'Error during lookup action.'
-                  }
-                });
-              });
               // TODO: iterate through the agreements, retrieve formdata for
               // each agreement, which is a csv (maybe we could pipe request
               // into a csv parser that can handle streams?), parse the csv,
               // extract data we need.
               // protip: you can see this output from the github app's advanced tab when you dive into the 'deliveries'
-            } else {
-              // No agreements found, set the GitHub Check to fail
-              resolve(action_required(ow, args));
+              });
             }
           });
         });
       } else {
-        return resolve({
-          statusCode: 500,
-          body: {
-            error: err,
-            reason: 'Generic error in checker promise chain.'
-          }
-        });
+        return resolve(respond_with_error(err, 'Generic error in checker promise chain.'));
       }
     });
   });
 }
 
-function action_required (ow, args) {
-  ow.actions.invoke({
+function sign_cla (ow, args) {
+  var explicit_args = Object.assign({
+    conclusion: 'action_required',
+    details_url: 'http://opensource.adobe.com/cla.html',
+    title: 'Sign the Adobe CLA!',
+    summary: 'No signed agreements were found. Please [sign the Adobe CLA](http://opensource.adobe.com/cla.html)! Once signed, close and re-open your pull request to run the check again.\n\n If you are an Adobe employee, you do not have to sign the CLA. Instead contact Adobe\'s Open Source Office about the failure by mentioning them on the pull request with **@adobe/open-source-office** or via email <grp-opensourceoffice@adobe.com>.'
+  }, args);
+  return set_check(ow, explicit_args);
+}
+
+function set_check (ow, args) {
+  return ow.actions.invoke({
     name: 'cla-setgithubcheck',
     blocking: true,
     result: true,
-    params: {
-      installation_id: args.installation_id,
-      org: args.org,
-      repo: args.repo,
-      sha: args.commit_sha,
-      status: 'completed',
-      start_time: args.start_time,
-      conclusion: 'action_required',
-      details_url: 'http://opensource.adobe.com/cla.html',
-      title: 'Sign the Adobe CLA!',
-      summary: 'No signed agreements were found. Please [sign the Adobe CLA](http://opensource.adobe.com/cla.html)! Once signed, close and re-open your pull request to run the check again.\n\n If you are an Adobe employee, you do not have to sign the CLA. Instead contact Adobe\'s Open Source Office about the failure by mentioning them on the pull request with **@adobe/open-source-office** or via email <grp-opensourceoffice@adobe.com>.'
-    }
+    params: args
   }).then(function (check) {
     return {
+      statusCode: 200,
       body: check.title
     };
-  }).catch(function (err) {
-    return {
-      statusCode: 500,
-      body: {
-        error: err,
-        reason: 'Error during GitHub Check creation.'
-      }
-    };
   });
+}
+
+function respond_with_error (err, context) {
+  return {
+    statusCode: 500,
+    body: {
+      error: err,
+      reason: context
+    }
+  };
 }
 
 exports.main = main;
