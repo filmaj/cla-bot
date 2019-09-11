@@ -20,9 +20,9 @@ async function main (params) {
   let headers = {
     'Content-Type': 'application/json'
   };
-  if (params && params['__ow_headers'] && (params['__ow_headers']['X-AdobeSign-ClientId'] || params['__ow_headers']['X-ADOBESIGN-CLIENTID'])) {
+  if (params && params['__ow_headers'] && (params['__ow_headers']['X-AdobeSign-ClientId'] || params['__ow_headers']['X-ADOBESIGN-CLIENTID'] || params['__ow_headers']['x-adobesign-clientid'])) {
     // Verification of intent from Adobe Sign: https://helpx.adobe.com/sign/using/adobe-sign-webhooks-api.html#VoI
-    let client_id = params['__ow_headers']['X-AdobeSign-ClientId'] || params['__ow_headers']['X-ADOBESIGN-CLIENTID'];
+    let client_id = params['__ow_headers']['X-AdobeSign-ClientId'] || params['__ow_headers']['X-ADOBESIGN-CLIENTID'] || params['__ow_headers']['x-adobesign-clientid'];
     if (client_id === config.signClientID) {
       // We are responding to a request from a webhook created by us;
       // Make sure we echo the client id back in the header to ensure Adobe Sign
@@ -35,7 +35,7 @@ async function main (params) {
       // in the GET case, simply echo back with the client id header to complete
       // the webhook registration
       return {
-        statusCode: 204,
+        statusCode: 200,
         headers,
         body: { ClientIdHeaderStatus: !!headers['X-AdobeSign-ClientId'] }
       };
